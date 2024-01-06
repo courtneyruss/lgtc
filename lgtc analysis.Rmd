@@ -1,0 +1,383 @@
+---
+title: "Let's Go To Court Episode Analysis"
+author: "Courtney Russ"
+date: "`r Sys.Date()`"
+
+output:
+  rmdformats::material:
+    code_folding: show
+    thumbnails: false
+    fig_width: 6
+    fig_height: 4
+    df_print: kable
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+# Data
+
+## This is an analysis of Let's Go To Court episodes based on [this spreadsheet](https://docs.google.com/spreadsheets/u/0/d/1fjcQMWOd-nlz3OUZ3f3MdCYAkJXJWN-2fsVSDu0bB_U/htmlview#). <br>
+
+This information is incomplete; this file will be periodically updated as more information is added.
+<br><br>
+The spreadsheet was started by stephhayes and bizzybee429 on the Let's Go To Court Patreon discord server and has been contributed to by many other members.  <br><br>
+
+### [My Full Portfolio](https://www.datascienceportfol.io/CourtneyRuss)
+
+# Setup
+## Load Packages
+
+```{r packages, message=FALSE}
+library(googlesheets4)
+library(skimr)
+library(tidyverse)
+library(knitr)
+library(textTinyR)
+library(textstem)
+library(tidytext)
+library(tm)
+library(wordcloud)
+library(stringr)
+library(patchwork)
+```
+
+## Load data
+The [googlesheets4](https://googlesheets4.tidyverse.org) package is used to load the data via the Sheet API V4. 
+
+```{r data, message=FALSE}
+sheet_key <- "1fjcQMWOd-nlz3OUZ3f3MdCYAkJXJWN-2fsVSDu0bB_U" 
+# sheet_key is a static reference to the sheet
+
+sheet <- gs4_get(sheet_key)
+
+# Get Sheet 1 - regular episodes
+datareg <- read_sheet(sheet, sheet = 1) %>%
+  mutate(type = 'Regular') 
+
+# Get Sheet 2 - bonus episodes
+databonus <- read_sheet(sheet, sheet = 2) %>%
+  mutate(type = 'Bonus') %>%
+  rename(`...1` = `Episode Number`,
+         `...5` = `Brandi's Case`) # renaming for consistency to allow merge of datasets
+
+# Combine into one dataset - 'stacks' both on top of each other
+data <- bind_rows(datareg, databonus) 
+```
+
+## Clean Data
+During cleaning I have
+
+- removed columns that I'm not using
+
+- renamed the columns for easier reference
+
+- made the episode number numeric
+
+- removed episodes with empty titles - the spreadsheet is pre-numbered for future episodes so these extra rows need to be removed.
+
+```{r clean}
+data_clean <- data %>%
+  select(-`Inside Joke Origin`, 
+         -`Discord Questions Answered`, 
+         -`Interesting Facts/Anecdotes`, 
+         -`Release Date`) %>%
+  rename(episode_num = `...1`,
+         title = `Episode Title`,
+         summary = `Episode summary/Show notes`,
+         b_case = `...5`,
+         b_disc = `Brandi's Disclaimers`,
+         k_case = `Kristin's Case`,
+         k_disc = `Kristin's Disclaimers`,
+         after_dark = `After Dark?`,
+         fun_facts = `Tim Pound's Fun Facts`,
+         not_fun_facts = `Kristin's Not-So-Fun Fun Facts`,
+         guests = Guests,
+         guest_case = `Guest's Case`,
+         songs = `Songs Sung`,
+         k_source = `Kristin's Sources`,
+         b_source = `Brandi's Sources`,
+         g_source = `Guest's Sources`) %>%
+  mutate(episode_num = as.numeric(sub("#", "", episode_num))) %>%
+  filter(!is.na(title))
+```
+
+## Quick Look at Cleaned Data
+
+```{r skim}
+skim(data_clean)
+```
+
+# Disclaimers
+
+## Filter Disclaimers 
+
+Here I'm filtering for just the two disclaimer columns then pivoting them into a tidy data format and removing blanks. There is some inconsistency in capitalisation in the 'disclaimer' column so I've also standardised this. 
+
+```{r disclaimers}
+b_disclaimers <- data_clean %>%
+  select(episode_num, title, b_case, b_disc, type) %>%
+  rename(disclaimer = b_disc,
+         case = b_case) %>%
+  mutate(name = 'Brandi') %>%
+  filter(!is.na(disclaimer))
+
+k_disclaimers <- data_clean %>%
+  select(episode_num, title, k_case, k_disc, type) %>%
+  rename(disclaimer = k_disc,
+         case = k_case) %>%
+  mutate(name = "Kristin") %>%
+  filter(!is.na(disclaimer))
+
+disclaimers <- bind_rows(b_disclaimers, k_disclaimers) %>%
+  separate_rows(disclaimer, sep = " and ") %>%
+  arrange(episode_num) %>%
+  mutate(disclaimer = case_when(
+    disclaimer == 'old Timey Disclaimer' ~ 'Old Timey Disclaimer',
+    disclaimer == 'Old timey case, but no proper disclaimer' ~ 'Old Timey Disclaimer',
+    disclaimer == 'International Case Disclaimer' ~ 'International Disclaimer',
+    TRUE ~ disclaimer
+  ))
+```
+
+## View Disclaimers
+```{r view disclaimers}
+kable(disclaimers, col.names = c("Ep Number", "Title", "Case", "Disclaimers", "Episode Type", "Name"))
+
+```
+
+## Summarise 
+Summarising the data for plotting.
+
+```{r summarise}
+summary_disc <- disclaimers %>%
+  count(name, disclaimer) %>%
+  rename(count = n) 
+```
+
+## Plot
+
+```{r plot disclaimers, fig.fullwidth=TRUE}
+# Set custom colours
+colours <- RColorBrewer::brewer.pal(5, "Accent")
+disc_colours <- c(colours[1], colours[5])
+
+
+# Plot
+ggplot(summary_disc, aes(x = disclaimer, y = count, fill = name)) +
+  geom_bar(stat = "identity") +
+  scale_fill_manual(values = disc_colours) +
+  labs(title = "Disclaimer Counts by Host",
+       y = "Count",
+       fill = "Name") +
+  theme_minimal() + 
+  theme(legend.position = "right", 
+        legend.title = element_blank(), 
+        axis.text.x = element_text(angle = 45, hjust = 1), 
+        axis.title.x = element_blank(),
+        axis.title.y = element_blank())
+```
+<br>
+Kristin uses a lot more disclaimers than Brandi, especially the Old Timey Disclaimer. 
+
+# Top Words in Summary
+
+These are the words that are most used in the 'summary' column.
+
+## Process data
+
+```{r text, warning=FALSE, message=FALSE}
+remove <- "WARNING: The audio in this episode is rough\\. What can we say\\? We were young\\(ish\\), dumb, and thought we’d save a little money by sharing one microphone\\. Yeah\\. The audio quality improves drastically after episode 9\\."
+
+word_df <- data_clean %>%
+  mutate(
+    summary = str_replace_all(summary, remove, ""),
+    summary = str_replace_all(summary, "(?<!\\d)-(?!\\d)", " ") %>%
+    str_replace_all("[^A-Za-z\\s]", "")
+  ) %>%
+  unnest_tokens(word, summary) %>%
+  mutate(word = lemmatize_words(word)) %>%
+  anti_join(stop_words) %>%
+  filter(!is.na(word)) %>%
+  filter(!word %in% c("kristin", "brandi"))
+
+word_counts <- word_df %>%
+  group_by(word) %>%
+  summarise(count = n()) %>%
+  arrange(desc(count))
+
+top_words <- word_counts %>%
+  top_n(n=20, wt=count)
+```
+
+## Plot
+
+```{r plot words}
+ggplot(top_words, aes(x = count, y = fct_reorder(word, count))) +
+  geom_bar(stat = "identity", fill = disc_colours[1], alpha = 0.8) +
+  labs(title = "Top Words Used in Episode Summary", x = "Count", y = "") +
+  theme_minimal() +
+  theme(axis.title.y = element_blank())
+```
+
+## Word Cloud
+
+```{r wordcloud, warning=FALSE, message=FALSE}
+wordcloud(
+  words = word_df$word,
+  scale = c(3, 0.5),
+  min.freq = 15, 
+  random.order = FALSE, 
+  colors = brewer.pal(8, "Dark2")
+)
+```
+
+# Guests
+## Prepare Data
+Here I'm selecting for episodes with a value for 'guests' then standardising the value for each person's name. Non-name information from the 'guests' column is moved into the 'Notes' column.
+
+```{r guests}
+
+guests <- data_clean %>%
+  select(type, episode_num, title, guests, guest_case) %>%
+  filter(!is.na(guests)) %>%
+  mutate(guest = case_when(
+    grepl("norm|norman", guests, ignore.case = TRUE) ~ "Norman",
+    grepl("dp|daryl", guests, ignore.case = TRUE) ~ "DP",
+    TRUE ~ guests
+  )) %>%
+  mutate(Notes = str_replace_all(guests, c("Norman" = "", "Norm" = "", "Caruso" = "", "DP" = "", "Daryl" = ""))) %>%
+  select(-guests) %>%
+  mutate(Notes = str_trim(str_replace(Notes, "^[[:punct:][:space:]]+", "")),
+         guest_case = coalesce(guest_case, "None")) %>%
+  select(type, episode_num, title, guest, guest_case, Notes) %>%
+  arrange(type, episode_num) 
+```
+
+
+## View Guest Table
+```{r guests view}
+
+kable(guests, col.names = c("Episode Type", "Episode Num", "Title", "Guest", "Case", "Notes"))
+
+```
+
+## Summarise for Plot
+```{r guest summary}
+guest_summary <- guests %>%
+  group_by(guest) %>%
+  summarise(count = n())
+```
+
+## Plot
+
+```{r guest plot}
+ggplot(guest_summary, aes(x = guest, y = count, fill = guest)) +
+  geom_bar(stat = "identity") +
+  labs(title="Visitor Counts",
+       y="Count") +
+  theme_minimal() + 
+  theme(axis.title.x = element_blank(),
+        legend.position = "none")
+
+```
+<br>
+
+DP needs to make a few more appearances to catch up! 
+
+# Songs
+
+## Data Preparation
+I've filtered the data for episodes where there is a value for 'songs' and summarised it by episode type (regular or bonus).
+```{r songs}
+songs <- data_clean %>%
+  select(type, episode_num, title, songs) %>%
+  filter(!is.na(songs))
+
+song_type <- songs %>%
+  group_by(type) %>%
+  summarise(count = n()) %>%
+  mutate(percentage = count / sum(count) * 100)
+
+```
+
+## Plot
+```{r plot songs}
+g1 <- ggplot(song_type, aes(x = "", y = count, fill = type)) +
+  geom_bar(width = 1, stat = "identity") +
+  geom_text(aes(label = paste0(round(percentage), "%")), 
+            position = position_stack(vjust = 0.5)) +
+  coord_polar(theta = "y") +
+  theme_minimal() +
+  theme(axis.line = element_blank(),
+        axis.text = element_blank(),
+        axis.ticks = element_blank(),
+        panel.grid = element_blank(),
+        plot.margin = unit(rep(0, 4), "cm"),
+        plot.background = element_blank()) +  # Remove plot background
+  labs(title = "Episodes with Songs",
+       fill = "Episode Type",
+       y = "Count") +
+  theme_void() +
+  scale_fill_manual(values = disc_colours)
+
+# Compare to overall episodes
+overall_count <- data_clean %>%
+  group_by(type) %>%
+  summarise(count = n()) %>%
+  mutate(percentage = count / sum(count) * 100)
+
+g2 <- ggplot(overall_count, aes(x = "", y = count, fill = type)) +
+  geom_bar(width = 1, stat = "identity") +
+  geom_text(aes(label = paste0(round(percentage), "%")), 
+            position = position_stack(vjust = 0.5)) +
+  coord_polar(theta = "y") +
+  theme_minimal() +
+  theme(axis.line = element_blank(),    # Remove the axis line
+        axis.text = element_blank(),    # Remove axis text
+        axis.ticks = element_blank(),   # Remove axis ticks
+        panel.grid = element_blank(),   # Remove grid lines
+        plot.margin = unit(rep(0, 4), "cm"),
+        plot.background = element_blank()) +  # Remove plot background
+  labs(title = "Episodes Overall",
+       fill = "Episode Type",
+       y = "Count") +
+  theme_void() +
+  scale_fill_manual(values = disc_colours)
+
+(g1 | g2) + plot_layout(guides = "collect")
+
+
+
+``` 
+<br>
+Bonus episodes make up just 15% of all episodes but account for 31% of episodes with songs sung.
+
+# Tim Pound's Fun Facts
+## Get out your Fun Fact Journal
+
+Brandi sometimes shares fun facts about her dad. If you haven't kept track of them in your own Fun Fact Journal, they're summarised for you here.
+
+```{r Tim Pound}
+tim_pound <- data_clean %>%
+  select(episode_num, title, fun_facts) %>%
+  filter(!is.na(fun_facts)) %>%
+  arrange(episode_num)
+
+kable(tim_pound, col.names = c("Episode Num", "Episde", "Tim Pound's Fun Facts"))
+```
+
+# Kristin's Not-So-Fun Fun Facts
+### Some of us have different definitions of 'fun'
+
+```{r not fun facts}
+not_fun_facts <- data_clean %>%
+  select(episode_num, title, not_fun_facts) %>%
+  filter(!is.na(not_fun_facts)) %>%
+  arrange(episode_num)
+
+kable(not_fun_facts, col.names = c("Episode Num", "Episode", "Kristin's Not-So-Fun Fun Facts"))
+
+```
+
